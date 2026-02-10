@@ -5,7 +5,7 @@ from constants import *
 
 
 class HandGestureDetector:
-    """Hand gesture detector with keyboard fallback."""
+    """Hand gesture detector using MediaPipe."""
 
     def __init__(self):
         self.hand_x = 0.5
@@ -14,19 +14,36 @@ class HandGestureDetector:
         self.frame_rgb = None
         self.landmarks = None
         self.cap = None
+        self.use_mediapipe = False
         
-        # Try to open webcam for display only (not for detection)
+        # Try to initialize MediaPipe
+        try:
+            import mediapipe as mp
+            self.mp_hands = mp.solutions.hands
+            self.hands = self.mp_hands.Hands(
+                static_image_mode=False,
+                max_num_hands=1,
+                min_detection_confidence=0.7,
+                min_tracking_confidence=0.6,
+            )
+            self.use_mediapipe = True
+            print("INFO: MediaPipe hand detection initialized")
+        except Exception as e:
+            print(f"ERROR: MediaPipe not available ({type(e).__name__})")
+            self.use_mediapipe = False
+        
+        # Try to open webcam
         try:
             self.cap = cv2.VideoCapture(0)
             if self.cap and self.cap.isOpened():
                 self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
                 self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-                print("INFO: Webcam opened for display")
+                print("INFO: Webcam opened successfully")
             else:
                 self.cap = None
-                print("INFO: Webcam not available - using keyboard only")
+                print("ERROR: Webcam not available")
         except Exception as e:
-            print(f"INFO: Webcam unavailable - using keyboard only ({e})")
+            print(f"ERROR: Webcam unavailable ({e})")
             self.cap = None
 
     def _is_finger_extended(self, lm, tip_id, pip_id, mcp_id):
@@ -69,39 +86,46 @@ class HandGestureDetector:
         return "none"
 
     def update(self):
-        """Update hand position and gesture from keyboard."""
-        # Get keyboard input
-        keys = pygame.key.get_pressed()
+        """Update hand position and gesture from webcam."""
+        # Only use webcam - no keyboard fallback
+        if not self.use_mediapipe or not self.cap:
+            return
         
-        # Handle left/right arrow keys for movement
-        if keys[pygame.K_LEFT]:
-            self.hand_x = max(0, self.hand_x - 0.03)
-        elif keys[pygame.K_RIGHT]:
-            self.hand_x = min(1, self.hand_x + 0.03)
+        ret, frame = self.cap.read()
+        if not ret:
+            return
+
+        # Mirror the frame
+        frame = cv2.flip(frame, 1)
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
-        # Handle shooting gestures
-        if keys[pygame.K_1]:
-            self.gesture = "single"
-        elif keys[pygame.K_2]:
-            self.gesture = "burst"
-        elif keys[pygame.K_3]:
-            self.gesture = "shotgun"
-        else:
-            self.gesture = "none"
-        
-        # Try to read from webcam for display
-        if self.cap:
-            ret, frame = self.cap.read()
-            if ret:
-                frame = cv2.flip(frame, 1)
-                self.frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        try:
+            # Process with MediaPipe
+            results = self.hands.process(rgb)
+            self.frame_rgb = rgb
+            
+            if results.multi_hand_landmarks:
+                hand_lm = results.multi_hand_landmarks[0]
+                lm = hand_lm.landmark
+                self.landmarks = lm
+                self.hand_detected = True
+                
+                # Update hand position (wrist x position)
+                self.hand_x = lm[0].x
+                
+                # Classify gesture
+                self.gesture = self._classify_gesture(lm)
             else:
-                self.frame_rgb = None
-        else:
-            self.frame_rgb = None
-        
-        self.hand_detected = False
-        self.landmarks = None
+                # No hand detected
+                self.hand_detected = False
+                self.landmarks = None
+                self.gesture = "none"
+        except Exception as e:
+            print(f"Hand detection error: {e}")
+            self.frame_rgb = rgb
+            self.hand_detected = False
+            self.landmarks = None
+            self.gesture = "none"
 
     def get_pip_surface(self):
         """Return pygame surface of camera feed."""
@@ -140,3 +164,5 @@ class HandGestureDetector:
     def release(self):
         if self.cap:
             self.cap.release()
+        if self.use_mediapipe and hasattr(self, 'hands'):
+            self.hands.close()
